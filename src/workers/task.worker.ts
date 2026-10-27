@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { Worker, type Job } from 'bullmq';
 import { logger, redis } from '../config/redis.js';
 import { TASK_QUEUE_NAME } from '../queues/task.queue.js';
+import { BillingMockService } from '../services/billing.mock.service.js';
 import type { TaskPayload, TaskResult, TaskType } from '../types/task.types.js';
+
+const billingMockService = new BillingMockService();
 
 const handleTask = async (
   job: Job<TaskPayload, TaskResult, TaskType>,
@@ -35,6 +38,33 @@ const handleTask = async (
 
       logger.info({ jobId: job.id }, 'Notification task processed');
       return result;
+    }
+    case 'PROCESS_INVOICE': {
+      const attempt = job.attemptsMade + 1;
+      logger.info(
+        { jobId: job.id, customerId: job.data.customerId, attempt },
+        'Invoice processing started',
+      );
+
+      try {
+        const result = await billingMockService.processInvoice(job.data);
+        logger.info(
+          { jobId: job.id, customerId: job.data.customerId, invoiceId: result.invoiceId },
+          'Invoice processed successfully',
+        );
+        return result;
+      } catch (error: unknown) {
+        logger.warn(
+          {
+            jobId: job.id,
+            customerId: job.data.customerId,
+            attempt,
+            err: error,
+          },
+          'Invoice processing failed; BullMQ will handle retries',
+        );
+        throw error;
+      }
     }
   }
 };

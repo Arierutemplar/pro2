@@ -66,4 +66,34 @@ describe('POST /api/v1/tasks/process', () => {
     expect(response.body.acceptedAt).toEqual(expect.any(String));
     expect(addMock).toHaveBeenCalledWith('PROCESS_DOCUMENT', payload);
   });
+
+  it('returns 202 and the queue-generated job ID for a valid invoice task', async () => {
+    const payload = {
+      type: 'PROCESS_INVOICE',
+      customerId: 'customer-42',
+      amount: 125.5,
+      currency: 'USD',
+      taxId: 'TAX-123',
+      items: [
+        {
+          description: 'Consulting services',
+          quantity: 2,
+          unitPrice: 62.75,
+        },
+      ],
+    };
+
+    const response = await request(app)
+      .post('/api/v1/tasks/process')
+      .send(payload);
+
+    expect(response.status).toBe(202);
+    expect(response.body).toMatchObject({
+      taskId: 'job-123e4567-e89b-12d3-a456-426614174000',
+      taskType: 'PROCESS_INVOICE',
+      status: 'accepted',
+    });
+    expect(response.body.acceptedAt).toEqual(expect.any(String));
+    expect(addMock).toHaveBeenCalledWith('PROCESS_INVOICE', payload);
+  });
 });

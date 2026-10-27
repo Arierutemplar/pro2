@@ -1,0 +1,31 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      PORT: ${PORT:-3000}
+      REDIS_URL: redis://redis:6379
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-10}
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    depends_on:
+      redis:
+        condition: service_healthy
+    init: true
+    restart: unless-stopped
+
+volumes:
+  redis_data:

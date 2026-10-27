@@ -1,179 +1,256 @@
 # Distributed Task Queue Engine
 
-Motor de alto rendimiento orientado a producción para aceptar y procesar tareas distribuidas de forma asíncrona. Está construido con Node.js en modo ESM, TypeScript estricto, Express, BullMQ, Redis (ioredis) y Zod. Bull-Board ofrece una interfaz para inspeccionar el estado de la cola; Pino proporciona logs estructurados.
+Motor de tareas distribuidas de alto rendimiento, diseñado con criterios de
+producción para aceptar, validar y procesar trabajos asíncronos. La aplicación
+combina Node.js, TypeScript estricto, Express, BullMQ, Redis y Zod en una
+arquitectura desacoplada: la API confirma la recepción rápidamente y los
+workers procesan los trabajos de forma independiente y escalable.
 
-El endpoint de entrada valida la solicitud y la encola sin esperar a que termine el procesamiento. Los workers consumen los trabajos de forma independiente, lo que permite escalar la API y el procesamiento por separado.
+El proyecto sirve como referencia de portafolio técnico enterprise para
+resiliencia, observabilidad, validación de contratos y ejecución distribuida.
 
-## Casos de uso en arquitecturas de microservicios
+## Casos de uso implementados
 
-Una cola desacopla la recepción de solicitudes del trabajo que puede tardar, requerir reintentos o depender de servicios externos. La API puede confirmar la recepción con rapidez y los consumidores procesan los trabajos bajo su propia capacidad.
+### `PROCESS_DOCUMENT`
 
-- **Procesamiento de archivos y documentos (`PROCESS_DOCUMENT`)**: mueve análisis, extracción de metadatos, generación de hashes, conversiones o indexación fuera del ciclo HTTP. El handler actual calcula cantidad de caracteres y palabras, genera un hash SHA-256 y devuelve un resultado de procesamiento. En un despliegue real, el contenido de gran tamaño normalmente se almacena en object storage y el trabajo en cola lleva una referencia al objeto.
-- **Notificaciones y correos (`SEND_NOTIFICATION`)**: permite distribuir envíos masivos entre workers y reintentar fallos temporales de proveedores. El handler actual procesa el trabajo y registra el resultado; **no está conectado a un proveedor de correo o notificaciones**. Para enviar mensajes reales se debe integrar un proveedor y definir su política de idempotencia y manejo de errores.
-- **Control de tasa para APIs de terceros**: una cola puede amortiguar picos de solicitudes y los límites de concurrencia o tasa del consumidor pueden adaptarse a las cuotas del proveedor. La configuración actual establece concurrencia de workers; no implementa un rate limiter de proveedor.
-- **Tareas programadas o diferidas**: BullMQ permite programar trabajos futuros y repetitivos. La cola puede servir como base para cron jobs, pero este proyecto todavía no registra tareas programadas.
-- **Webhooks de pasarelas de pago**: un endpoint de webhook puede validar la firma, persistir el evento y encolarlo para responder rápidamente al proveedor; los workers procesan luego la conciliación y actualizaciones internas. Esta aplicación no incluye actualmente un endpoint de webhook ni validación de firmas.
+Procesamiento asíncrono de archivos y documentos fuera del ciclo HTTP. El
+worker analiza el contenido recibido y devuelve:
 
-Los últimos tres patrones describen extensiones adecuadas para esta arquitectura, no funcionalidades que ya estén habilitadas en el código actual.
+- identificador del documento;
+- cantidad de caracteres y palabras;
+- hash SHA-256 del contenido;
+- fecha de finalización.
 
-## Arquitectura y funcionalidades
+En un entorno productivo, los archivos grandes pueden persistirse en object
+storage y el payload puede transportar únicamente una referencia al objeto.
 
-El flujo principal sigue capas desacopladas:
+### `SEND_NOTIFICATION`
+
+Distribución masiva de notificaciones y correos mediante la cola y los
+workers. El contrato valida destinatario, asunto y mensaje, y el worker
+registra el resultado procesado. La implementación actual es un adaptador
+demostrativo: no conecta todavía con un proveedor externo de email o
+notificaciones. Esa integración debe añadir idempotencia, límites del
+proveedor y tratamiento de errores específicos.
+
+### `PROCESS_INVOICE`
+
+Simulación de facturación asíncrona con un servicio externo. El servicio mock:
+
+- introduce un retardo aleatorio de entre **1.5 y 3 segundos**;
+- responde con una factura `PAID`, UUID y URL simulada de PDF cuando tiene
+  éxito;
+- genera un error transitorio **503** en el **20%** de las llamadas;
+- permite demostrar la resiliencia y los reintentos automáticos de BullMQ.
+
+La cola configura hasta cinco intentos con **exponential backoff** desde 2
+segundos. Cuando el servicio simulado falla, el worker propaga el error para
+que BullMQ reprograme el trabajo. No se realiza un cobro real ni se invoca un
+proveedor de facturación externo.
+
+## Arquitectura y tecnologías
+
+El flujo de una solicitud es:
 
 ```text
-HTTP Router → Controller → Service → BullMQ Queue → Worker
+HTTP Router → Controller → Zod → Service → BullMQ Queue → Redis → Worker
 ```
 
-- **Validación runtime**: Zod valida los payloads usando una unión discriminada por `type` antes de encolar el trabajo.
-- **Cola y workers distribuidos**: BullMQ utiliza Redis como almacenamiento y coordinación. `REDIS_URL` acepta una URL `rediss://` para una conexión TLS, como la proporcionada por Upstash Redis Cloud.
-- **Resiliencia**: cada trabajo tiene hasta 5 intentos, con retroceso exponencial a partir de 2 segundos. Los trabajos completados se conservan hasta 24 horas y los fallidos hasta 7 días, además de los límites de cantidad definidos en la cola.
-- **Observabilidad**: Pino registra eventos estructurados de Redis y del worker, incluidos el ID, tipo, resultado o error e intento del trabajo.
-- **Dashboard**: Bull-Board muestra la cola `tasks` en `/admin/queues`, incluidos trabajos activos, completados, diferidos y fallidos.
-- **Pruebas**: Vitest y Supertest verifican la validación de solicitudes y la aceptación de trabajos sin requerir una instancia real de Redis para estas pruebas.
-- **Cierre ordenado**: el proceso detiene la recepción HTTP y cierra worker, cola y conexión Redis al recibir `SIGTERM` o `SIGINT`.
+- **Node.js + TypeScript**: runtime ESM y tipado estricto para contratos
+  mantenibles.
+- **Express**: API HTTP, middleware, manejo de errores y composición de rutas.
+- **Zod**: validación runtime estricta mediante una unión discriminada por
+  `type` antes de encolar cada tarea.
+- **BullMQ**: encolamiento, consumo, concurrencia, reintentos, exponential
+  backoff y persistencia de estados.
+- **Redis**: coordinación y almacenamiento distribuido de BullMQ mediante
+  `ioredis`. Se admite `REDIS_URL`, incluyendo conexiones TLS `rediss://`.
+- **Pino**: logs estructurados para eventos de Redis, workers, intentos,
+  resultados y errores.
+- **Bull-Board**: interfaz gráfica de monitoreo disponible en
+  `/admin/queues`, con el estado de la cola `tasks` y sus trabajos activos,
+  completados, diferidos y fallidos.
+- **Vitest + Supertest**: suite de pruebas unitarias y de integración HTTP.
 
-> **Seguridad del dashboard:** el endpoint `/admin/queues` no tiene autenticación ni autorización incorporadas. En producción, no lo expongas públicamente: protégelo mediante autenticación/autorización de la aplicación, una red privada o controles equivalentes en el proxy de entrada.
+Los trabajos completados se conservan hasta 24 horas y los fallidos hasta
+7 días, sujetos también a los límites de cantidad configurados en la cola.
+La concurrencia del worker se controla con `WORKER_CONCURRENCY` y el proceso
+implementa cierre ordenado ante `SIGTERM` y `SIGINT`.
 
-## Stack tecnológico
+> **Seguridad del dashboard:** `/admin/queues` no incorpora autenticación ni
+> autorización. En producción debe exponerse únicamente detrás de controles
+> de acceso, una red privada o un proxy autenticado.
 
-| Tecnología | Uso |
-|---|---|
-| Node.js (ESM) | Entorno de ejecución y módulos ECMAScript |
-| TypeScript (Strict) | Tipado estático y compilación estricta |
-| Express | API HTTP y composición de rutas |
-| BullMQ | Encolamiento, reintentos y consumo de trabajos |
-| Redis (ioredis / Upstash) | Backend distribuido de BullMQ; TLS con `rediss://` |
-| Zod | Validación de payloads y contratos |
-| Pino | Logging estructurado |
-| Bull-Board | Dashboard de monitoreo de colas |
-| Vitest | Ejecutor de pruebas |
-| Supertest | Pruebas HTTP de integración |
+## Despliegue y ejecución con Docker
+
+El entorno completo —aplicación Node.js y Redis persistente— se levanta con
+Docker Compose:
+
+```bash
+docker compose up --build
+```
+
+Compose inicia Redis 7, espera su healthcheck y después arranca la aplicación.
+La API queda disponible en `http://localhost:3000` y los datos de Redis se
+conservan en el volumen `redis_data`. Para detener los servicios:
+
+```bash
+docker compose down
+```
+
+El [Dockerfile](./Dockerfile) utiliza un **multi-stage build**:
+
+1. instala todas las dependencias necesarias para compilar;
+2. compila TypeScript a `dist/`;
+3. instala únicamente dependencias de producción con `npm ci --omit=dev`;
+4. crea una imagen runtime mínima basada en Node.js Alpine, ejecutada con el
+   usuario sin privilegios `node`.
+
+Este enfoque reduce el tamaño de la imagen final y evita incluir herramientas
+de desarrollo en producción. Las variables `PORT` y `WORKER_CONCURRENCY`
+pueden sobrescribirse al iniciar Compose.
+
+## Desarrollo local y pruebas
+
+### Requisitos e instalación
+
+Se requiere Node.js 22 o una versión compatible con las dependencias y una
+instancia de Redis accesible. Para instalar dependencias:
+
+```bash
+npm install
+```
+
+Configura un archivo `.env` en la raíz (no incluyas credenciales reales):
+
+```dotenv
+PORT=3000
+REDIS_URL=redis://127.0.0.1:6379
+WORKER_CONCURRENCY=10
+LOG_LEVEL=info
+SERVICE_NAME=distributed-task-queue
+```
+
+Para Redis administrado con TLS, utiliza una URL `rediss://` y almacena el
+token como secreto. También se admiten `REDIS_HOST`, `REDIS_PORT` y
+`REDIS_PASSWORD` para una configuración local alternativa.
+
+### Scripts de desarrollo y validación
+
+Arrancar la aplicación en modo desarrollo:
+
+```bash
+npm run dev
+```
+
+Ejecutar pruebas unitarias y de integración:
+
+```bash
+npm test
+```
+
+Verificar tipos sin emitir archivos:
+
+```bash
+npx tsc --noEmit
+```
+
+## API: envío de tareas
+
+### `POST /api/v1/tasks/process`
+
+El endpoint valida el payload con Zod y devuelve `202 Accepted` cuando BullMQ
+acepta el trabajo. La respuesta contiene los campos `taskId`, `taskType`,
+`status` (con valor `accepted`) y `acceptedAt`.
+
+Ejemplo con `PROCESS_DOCUMENT`:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/tasks/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "PROCESS_DOCUMENT",
+    "documentId": "document-42",
+    "content": "Contenido del documento para procesar."
+  }'
+```
+
+Ejemplo con `SEND_NOTIFICATION`:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/tasks/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "SEND_NOTIFICATION",
+    "recipient": "persona@example.com",
+    "subject": "Actualización",
+    "message": "El procesamiento terminó."
+  }'
+```
+
+Ejemplo completo con `PROCESS_INVOICE`:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/tasks/process \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "PROCESS_INVOICE",
+    "customerId": "customer-42",
+    "amount": 125.50,
+    "currency": "USD",
+    "taxId": "TAX-123",
+    "items": [
+      {
+        "description": "Consulting services",
+        "quantity": 2,
+        "unitPrice": 62.75
+      }
+    ]
+  }'
+```
+
+El payload de factura requiere `customerId`, `amount` positivo, `currency`,
+`taxId` y al menos un elemento en `items`, cada uno con `description`,
+`quantity` entera positiva y `unitPrice` positivo.
+
+Un payload inválido devuelve `400 Bad Request` con `error` e `issues`, que
+identifican la ruta y el mensaje de cada incumplimiento. Los errores de
+encolamiento se registran con Pino y pasan al middleware HTTP de errores.
+
+## Monitoreo
+
+Con la aplicación ejecutándose, abre:
+
+```text
+http://localhost:3000/admin/queues
+```
+
+Bull-Board permite inspeccionar la cola `tasks`, sus estados, intentos y
+errores. En producción, protege este endpoint antes de exponerlo fuera de
+una red de confianza.
 
 ## Estructura del proyecto
 
 ```text
 .
 ├── src/
-│   ├── config/
-│   │   └── redis.ts
-│   ├── controllers/
-│   │   └── task.controller.ts
-│   ├── queues/
-│   │   └── task.queue.ts
+│   ├── config/redis.ts
+│   ├── controllers/task.controller.ts
+│   ├── queues/task.queue.ts
 │   ├── routes/
 │   │   ├── board.routes.ts
 │   │   └── task.routes.ts
 │   ├── services/
+│   │   ├── billing.mock.service.ts
 │   │   └── task.service.ts
-│   ├── types/
-│   │   └── task.types.ts
-│   ├── workers/
-│   │   └── task.worker.ts
+│   ├── types/task.types.ts
+│   ├── workers/task.worker.ts
 │   ├── app.ts
 │   └── index.ts
-├── tests/
-│   └── task.test.ts
-├── vitest.config.ts
+├── tests/task.test.ts
+├── Dockerfile
+├── docker-compose.yml
 ├── package.json
-├── package-lock.json
-└── tsconfig.json
+├── tsconfig.json
+└── vitest.config.ts
 ```
-
-## Variables de entorno
-
-Crea un archivo `.env` en la raíz del proyecto. No incluyas credenciales reales en el repositorio.
-
-```dotenv
-PORT=3000
-REDIS_URL=rediss://default:<TOKEN>@<HOST>:<PORT>
-
-# Opcionales
-WORKER_CONCURRENCY=10
-LOG_LEVEL=info
-SERVICE_NAME=distributed-task-queue
-```
-
-Para Redis local también se puede omitir `REDIS_URL` y configurar `REDIS_HOST`, `REDIS_PORT` y, si aplica, `REDIS_PASSWORD`. El cliente usa `127.0.0.1:6379` como valores locales predeterminados. Para Upstash, utiliza la URL TLS `rediss://` y conserva el token como secreto.
-
-## Instalación y ejecución
-
-Se requiere una versión de Node.js compatible con las dependencias y una instancia de Redis accesible para ejecutar la aplicación.
-
-```bash
-npm install
-```
-
-Iniciar el servidor de desarrollo (carga las variables de `.env`):
-
-```bash
-npm run dev
-```
-
-Ejecutar las pruebas automatizadas:
-
-```bash
-npm test
-```
-
-Comprobar los tipos de TypeScript:
-
-```bash
-npx tsc --noEmit
-```
-
-## API y endpoints
-
-### `POST /api/v1/tasks/process`
-
-Encola un trabajo y responde `202 Accepted` si BullMQ lo acepta. El cuerpo debe incluir el discriminador `type` y los campos requeridos para el tipo de tarea.
-
-Ejemplo de solicitud `PROCESS_DOCUMENT`:
-
-```http
-POST /api/v1/tasks/process
-Content-Type: application/json
-```
-
-```json
-{
-  "type": "PROCESS_DOCUMENT",
-  "documentId": "document-42",
-  "content": "Contenido del documento para procesar."
-}
-```
-
-Respuesta esperada (`202 Accepted`):
-
-```json
-{
-  "taskId": "1",
-  "taskType": "PROCESS_DOCUMENT",
-  "status": "accepted",
-  "acceptedAt": "2026-10-23T20:00:00.000Z"
-}
-```
-
-`taskId` es el identificador de trabajo generado por BullMQ. El contrato HTTP actual utiliza ese nombre; el ID no se devuelve como `jobId`.
-
-Payload admitido para `SEND_NOTIFICATION`:
-
-```json
-{
-  "type": "SEND_NOTIFICATION",
-  "recipient": "persona@example.com",
-  "subject": "Actualización",
-  "message": "El procesamiento terminó."
-}
-```
-
-Un payload que no cumpla el esquema devuelve `400 Bad Request`, con `error` y una lista de `issues` que indica las rutas y mensajes de validación. Si falla el encolamiento, el error pasa al middleware HTTP de errores y se registra con Pino.
-
-### Dashboard Bull-Board
-
-Con el servidor ejecutándose, abre:
-
-```text
-http://localhost:3000/admin/queues
-```
-
-El dashboard muestra el estado de la cola `tasks` y sus trabajos. Protege este endpoint en cualquier entorno accesible fuera de una red de confianza.
